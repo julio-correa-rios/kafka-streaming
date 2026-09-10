@@ -1,0 +1,17 @@
+[project]
+name = "kafka"
+version = "0.1.0"
+description = "Minimal viable example for Apache Kafka with Docker and Python"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "confluent-kafka",
+    "python-dotenv",
+    "sqlalchemy",
+    "psycopg2-binary",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
