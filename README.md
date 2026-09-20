@@ -7,9 +7,9 @@ Minimal viable example for Apache Kafka with Docker and Python. A producer publi
 | Service | What it's for | Where |
 | --- | --- | --- |
 | Kafka | Broker (KRaft, 3 partitions by default) | `localhost:9092` |
-| Kafka UI | Look at topics and messages | http://localhost:8080 |
+| Kafka UI | Look at topics and messages | `localhost:8080` |
 | Postgres | Where events land | `localhost:5432` |
-| Metabase | Query the table without SQL if you want | http://localhost:3000 |
+| Metabase | Query the table without SQL if you want | `localhost:3000` |
 | Producer / consumer | The actual app | Docker services, or `main.py` |
 
 Each event is a small trip record: vehicle, driver, user, duration, distance, amount. Topic name is `user-events`.
