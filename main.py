@@ -12,6 +12,7 @@ from src.event_producer import EventProducer
 from src.models.event import Event
 from src.models.utils import create_tables, get_session
 
+import os
 load_dotenv()
 
 EVENTS = {
@@ -40,6 +41,7 @@ EVENTS = {
         "amount": "$30.00"
     }
 }
+
 
 #     # - ID del vehículo.
 #     # - ID del conductor.
@@ -72,6 +74,47 @@ EVENTS = {
 #     # Importe
 #     ("amount", "$12.00"),]
 # ]
+
+## Random events generator
+import random
+import time
+def random_event(event_id: str) -> dict:
+    duration = random.randint(5, 30)
+    distance = round(random.uniform(1.5, 20.0), 1)
+    amount = round(distance * 2.5, 2)
+    n = event_id.split("-")[1]
+    return {
+        "vehicle-id": f"vehicle-{n}",
+        "driver-id": f"driver-{n}",
+        "user-id": f"user-{n}",
+        "duration": f"{duration} minutes",
+        "distance": f"{distance} km",
+        "amount": f"${amount:.2f}",
+    }
+
+def publish_random_events() -> None:
+    interval = float(os.getenv("PRODUCER_INTERVAL", "2.0"))
+    replay_chance = float(os.getenv("PRODUCER_REPLAY_CHANCE", "0.3"))
+
+    producer = EventProducer()
+    seen_ids: list[str] = []
+    next_id = 4  # 1–3 already exist from the static producer
+    print("--- Producing random events (Ctrl+C to stop) ---")
+    while True:
+        if seen_ids and random.random() < replay_chance:
+            event_key = random.choice(seen_ids)
+            kind = "replay"
+        else:
+            event_key = f"event-{next_id}"
+            seen_ids.append(event_key)
+            next_id += 1
+            kind = "new"
+        event_value = random_event(event_key)
+        producer.publish(event_key, json.dumps(event_value))
+        print(f"✓ Produced ({kind}): {event_key} -> {event_value}")
+        time.sleep(interval)
+
+
 
 
 def publish_events() -> None:
@@ -137,6 +180,11 @@ def print_event(message: Message) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+    "-r", "--random",
+    action="store_true",
+    help="Publish random events in a loop (sometimes repeats ids)",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("-p", "--publish", action="store_true",
                       help="Only publish events")
@@ -146,9 +194,17 @@ def main() -> None:
 
     if not args.consume:
         publish_events()
-
+    if args.random:
+        try:
+            publish_random_events()
+        except KeyboardInterrupt:
+            print("\n✓ Stopped producing")
+            return
+    
     if not args.publish:
         consume_events(limit=None if args.consume else len(EVENTS))
+
+    
 
 
 if __name__ == "__main__":
