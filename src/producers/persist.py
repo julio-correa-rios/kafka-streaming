@@ -2,9 +2,14 @@ import random
 import json
 import os
 import time
-from src.clock import utc_now
+from src.clock import utc_now, sleep_with_variation
 from src.event_producer import EventProducer
 
+# Interval and variation
+import dotenv
+dotenv.load_dotenv()
+INTERVAL = float(os.getenv("PRODUCER_INTERVAL"))
+VARIATION = float(os.getenv("PRODUCER_INTERVAL_VARIATION"))
 
 ## Random events generator
 def random_event(event_id: str) -> dict:
@@ -44,3 +49,4 @@ def publish_random_events() -> None:
             kind = "new"
         producer.publish(event_key, json.dumps(event_value))
         print(f"✓ Produced ({kind}): {event_key} -> {event_value}")
+        sleep_with_variation(INTERVAL, VARIATION)
