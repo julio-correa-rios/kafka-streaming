@@ -1,0 +1,33 @@
+services:
+  producer:
+    build: .
+    command: python main.py -p -r
+    env_file: .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+    depends_on:
+      - kafka
+    restart: unless-stopped
+  
+  consumer:
+    build: .
+    command: python main.py -c
+    env_file: .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+    depends_on:
+      - kafka
+      - postgres
+    restart: unless-stopped
+
+  producer-inference:
+    build: .
+    command: python main.py -p --inference
+    env_file: .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+    depends_on:
+      - kafka
+    restart: unless-stopped
