@@ -1,5 +1,7 @@
 services:
   producer:
+    deploy:
+      replicas: ${PERSIST_PRODUCER_REPLICAS:-1}
     build: .
     command: python main.py -p -r
     env_file: .env
@@ -9,7 +11,21 @@ services:
       - kafka
     restart: unless-stopped
   
+  inference-producer:
+    deploy:
+      replicas: ${INFERENCE_PRODUCER_REPLICAS:-1}
+    build: .
+    command: python main.py -p --inference
+    env_file: .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+    depends_on:
+      - kafka
+    restart: unless-stopped
+
   consumer:
+    deploy:
+      replicas: ${CONSUMER_REPLICAS:-1}
     build: .
     command: python main.py -c
     env_file: .env
@@ -22,12 +38,4 @@ services:
       - postgres
     restart: unless-stopped
 
-  producer-inference:
-    build: .
-    command: python main.py -p --inference
-    env_file: .env
-    environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
-    depends_on:
-      - kafka
-    restart: unless-stopped
+  
