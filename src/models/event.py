@@ -15,11 +15,25 @@ class Event(Base):
     duration = Column(String(50), nullable=False)
     distance_km = Column(Numeric(10, 2), nullable=False)
     amount = Column(Numeric(10, 2), nullable=False)
-    created_at = Column(DateTime, server_default=func.now())
-
+    produced_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
     def __repr__(self):
         return (
             f"<Event(id={self.id}, vehicle_id='{self.vehicle_id}', "
             f"driver_id='{self.driver_id}', user_id='{self.user_id}', "
             f"amount={self.amount})>"
         )
+
+
+
+class InferenceResult(Base):
+    """Recommended price from an inference request."""
+    __tablename__ = "inference_results"
+    id = Column(String(50), primary_key=True)
+    user_id = Column(String(100), nullable=False)
+    duration = Column(String(50), nullable=False)
+    distance_km = Column(Numeric(10, 2), nullable=False)
+    recommended_price = Column(Numeric(10, 2), nullable=False)
+    produced_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
