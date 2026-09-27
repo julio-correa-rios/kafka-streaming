@@ -29,15 +29,15 @@ def random_event(event_id: str) -> dict:
     }
 
 def publish_random_events() -> None:
-    interval = float(os.getenv("PRODUCER_INTERVAL", "2.0"))
-    replay_chance = float(os.getenv("PRODUCER_REPLAY_CHANCE", "0.3"))
+    # interval = float(os.getenv("PRODUCER_INTERVAL", "2.0"))
+    # replay_chance = float(os.getenv("PRODUCER_REPLAY_CHANCE", "0.3"))
 
     producer = EventProducer()
     seen: dict[str, dict] = {}
     next_id = 4  # 1–3 already exist from the static producer
     print("--- Producing random events (Ctrl+C to stop when run using python main.py -p) ---")
     while True:
-        if seen and random.random() < replay_chance:
+        if seen and random.random() < VARIATION:
             event_key = random.choice(list(seen))
             event_value = seen[event_key]
             kind = "replay"

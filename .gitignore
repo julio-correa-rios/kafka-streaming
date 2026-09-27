@@ -1,4 +1,9 @@
 .env
 .env.local
 .env.example
+.env.development
+.env.test
 
+
+__pycache__/
+*.pyc
