@@ -1,189 +1,288 @@
-# Architecture notes (referential evidence)
+# Architecture notes
 
-Session notes for hitos 4–6: what was built, how it maps to the mentor’s diagram, how scaling works, and the proposed Compose split.
+Study notes for the Kafka course project: what is built, why, and how to run it.
+Source of truth is the code; update this file when the code changes.
 
 ---
 
-## Mentor architecture (target)
+## 1. Big picture
 
 ```mermaid
 flowchart LR
-  PI[Productor inferencia] --> EP[event_producer]
-  PP[Productor persistencia] --> EP
-  EP --> K[Kafka]
-  K --> EC[event_consumer]
-  EC --> IA[Inferencia IA]
-  EC --> CP[Consumidor persistencia]
-  IA --> PG[Postgres]
-  CP --> PG
-  PG --> MB[Metabase BI]
+  PP[producer<br/>persist] --> EP[EventProducer]
+  PI[inference-producer] --> EP
+  PZ[poison-producer<br/>planned] -.-> EP
+  EP --> T[(user-events<br/>3 partitions)]
+  T --> EC[EventConsumer<br/>group user-events-consumer]
+  EC --> R{router.handle_event}
+  R -- type=persist --> P[persist_event] --> E[(events)]
+  R -- type=inference --> I[infer_event] --> IR[(inference_results)]
+  R -. unknown type / bad JSON<br/>planned .-> DLQ[(user-events-dlq)]
+  E --> MB[Metabase]
+  IR --> MB
 ```
 
-Two producers share one Kafka producer client. One consumer client polls the topic, then **forks**: persist trips vs infer a price. Both paths write Postgres. Metabase is the dashboard.
-
-“IA” is currently `recommended_price = distance_km * 2.5`. A real model can replace that function later without changing Kafka or Compose.
-
----
-
-## Current repo vs mentor boxes
-
-| Mentor box | Today | After splitting `main.py` |
-|---|---|---|
-| Productor persistencia | Compose `producer` → `python main.py -p -r` | `src/producers/persist.py` |
-| Productor inferencia | Compose `producer-inference` → `python main.py -p --inference` | `src/producers/inference.py` |
-| event_producer | `src/event_producer.py` | keep (shared) |
-| Kafka | Compose `kafka` (INTERNAL `kafka:9093`) | keep |
-| event_consumer | `src/event_consumer.py` | keep (shared) |
-| Inferencia (IA) | `infer_event` in `main.py` | `src/handlers/infer.py` |
-| Consumidor persistencia | `persist_event` in `main.py` | `src/handlers/persist.py` |
-| Fork | `handle_event` in `main.py` | `src/handlers/router.py` |
-| Postgres | `src/models/` (`events`, `inference_results`) | keep |
-| Metabase | Compose `metabase` | keep |
-| CLI | `main()` | `main.py` flags only |
-
-Do **not** grow `src/components/` — it duplicates the Kafka clients. One `EventProducer` / `EventConsumer` at `src/`.
-
-Compose **commands stay the same** after the Python split (`-p -r`, `-c`, `--inference`).
+- Producers and consumer are the **same Docker image**, different commands.
+- One shared producer client and one shared consumer client; the router forks by the JSON field `type`.
+- "IA" is `recommended_price = distance_km * 2.5`. A real model can replace that function without touching Kafka or Compose.
 
 ---
 
-## Hitos
+## 2. Code layout
 
-### Hito 4 — Dockerización (done)
-
-- One `Dockerfile`, same image for app processes.
-- Separate services: `producer`, `consumer` (later `producer-inference`).
-- **No** `container_name` on those services (required for `--scale`).
-- In-container addresses: Kafka `kafka:9093`, Postgres `postgres:5432`.
-- Host / `dev` still use `.env` (`127.0.0.1:9092`, `localhost`).
-- Kafka `KAFKA_NUM_PARTITIONS: 3` so extra consumers get partitions.
-
-Scale is **not** Python. Compose starts N replicas of a service:
-
-```bash
-docker compose up -d --scale producer=2 --scale consumer=3 --scale producer-inference=1
-```
-
-Consumers share `KAFKA_GROUP_ID`. Replicas ≤ partitions or extras sit idle. Producers scale without extra Kafka setup.
-
-### Hito 5 — Inferencia y comandos (code done; dashboard is the last checkbox)
-
-- Same topic `user-events`.
-- JSON field `type`: `persist` | `inference`.
-- `produced_at` in the message (event time; survives DB rebuild).
-- `created_at` = Postgres insert time (resets on `down -v`).
-- Consumer fork: persist → `events`; inference → `inference_results`.
-- Inference keys: `infer-*`. Persist keys: `event-*`.
-- Metabase: host `postgres`, db `testdb`, user `admin`, password `admin123`. Chart `inference_results.recommended_price` vs `produced_at`. Dashboard “Precios recomendados”.
-
-### Hito 6 — Testing (not started)
-
-- `pytest` is already a dev dependency.
-- Test persist handler and inference handler.
-- Fake Kafka messages; mock DB. No broker in tests.
-- Easier after handlers live outside `main.py`.
-
----
-
-## Events and clocks
-
-```mermaid
-sequenceDiagram
-  participant Prod as Producer
-  participant K as Kafka
-  participant C as Consumer
-  participant PG as Postgres
-  Prod->>K: JSON with type + produced_at
-  C->>PG: produced_at copied from JSON
-  C->>PG: created_at = now()
-```
-
-Old messages without `produced_at` fall back to Kafka’s broker timestamp.
-
----
-
-## Ports and commands
-
-| Service | URL / port |
+| Path | Role |
 |---|---|
-| Kafka UI | http://localhost:8080 |
-| Metabase | http://localhost:3000 |
-| Kafka (host clients) | `127.0.0.1:9092` |
-| Postgres (host clients) | `localhost:5432` |
-
-```bash
-# full stack
-docker compose up -d --build
-
-# logs
-docker compose logs -f producer consumer producer-inference
-
-# stop, keep data
-docker compose down
-
-# wipe Kafka + Postgres volumes
-docker compose down -v
-```
-
-`up producer consumer` does **not** start kafka-ui or metabase.
-
-Do not run host `python main.py -r` while producer containers are up (double produce).
+| `main.py` | CLI only: `-p -r` (persist), `-p --inference`, `-c` (consume) |
+| `src/event_producer.py` | `EventProducer.publish(key, value)` – shared Kafka producer |
+| `src/event_consumer.py` | `EventConsumer.consume(handler, limit)` – shared Kafka consumer |
+| `src/clock.py` | `utc_now`, `event_time`, `sleep_with_variation` |
+| `src/producers/persist.py` | Trip events, `type: persist`, keys `event-N`, sometimes replays a key |
+| `src/producers/inference.py` | Quote requests, `type: inference`, keys `infer-N` |
+| `src/consumers/router.py` | `handle_event` (fork), `consume_events` (loop) |
+| `src/consumers/persist.py` | `persist_event` → table `events` |
+| `src/consumers/infer.py` | `infer_event` → table `inference_results` |
+| `src/models/` | `Event`, `InferenceResult`, `get_session`, `create_tables` |
+| `src/components/` | Old duplicate of the clients. Do not use or grow. |
+| `tests/` | pytest against real Kafka + Postgres (see §7) |
 
 ---
 
-## Two Compose files (mentor suggestion)
+## 3. Docker Compose
 
-**Yes — do this.** One file was the right start. Two files match the same split as the Python modules: **infra you reuse** vs **your processes you rebuild and scale**.
+`docker-compose.yml` only `include:`s the two files, so plain `docker compose ...` sees all services.
 
 | File | Services |
 |---|---|
-| Infra | `kafka`, `kafka-ui`, `postgres`, `metabase`, `dev` |
-| App | `producer`, `consumer`, `producer-inference` |
-
-Why it helps:
-
-- Rebuild/scale producers and consumers without restarting Kafka/Postgres.
-- Matches the mentor diagram (shared platform vs your modules).
-- `down` on the app file does not wipe infra volumes if you only stop app services.
-
-How to wire it (same project, same network):
-
-```bash
-docker compose -f docker-compose.infra.yml -f docker-compose.app.yml up -d --build
-docker compose -f docker-compose.infra.yml -f docker-compose.app.yml up -d --scale consumer=3
-docker compose -f docker-compose.infra.yml -f docker-compose.app.yml logs -f consumer
-```
-
-Or `export COMPOSE_FILE=docker-compose.infra.yml:docker-compose.app.yml` and keep using `docker compose up`.
+| `docker-compose.infra.yml` | `kafka`, `kafka-ui`, `postgres`, `metabase`, `dev` |
+| `docker-compose.app.yml` | `producer`, `inference-producer`, `consumer` (planned: `poison-producer`) |
 
 Rules:
 
-- Keep the **same project name** (default: folder name `kafka`) so DNS names `kafka` and `postgres` still resolve.
-- App services still `depends_on: kafka` / `postgres`.
-- App still overrides `KAFKA_BOOTSTRAP_SERVERS=kafka:9093` and `POSTGRES_HOST=postgres`.
-- Still no `container_name` on app services.
-- `.devcontainer` can keep pointing at the infra file (plus override); `dev` stays infra.
+- App services have **no `container_name`** so they can run several replicas.
+- Replicas come from `.env` via `deploy.replicas`. `--scale` overrides it for one run.
+- Consumer replicas ≤ partitions (3), otherwise extras are idle.
+- In containers: `KAFKA_BOOTSTRAP_SERVERS=kafka:9093`, `POSTGRES_HOST=postgres`.
+- On the Mac and in tests: `127.0.0.1:9092`, `localhost`.
+- Postgres has no `container_name`, so its name is `kafka-postgres-1`. Prefer `docker compose stop postgres`.
 
-Optional later: Compose `include:` from the app file. `-f` two files is enough for the assignment.
+```bash
+docker compose up -d --build                          # everything
+docker compose -f docker-compose.infra.yml up -d      # infra only (tests)
+docker compose logs -f producer inference-producer consumer
+docker compose down                                   # stop, keep data
+docker compose down -v                                # also wipe Kafka + Postgres volumes
+```
 
-Not required: a second Docker network. Merged Compose files share the default network.
+| Service | Address |
+|---|---|
+| Kafka UI | http://localhost:8080 |
+| Metabase | http://localhost:3000 (host `postgres`, db `testdb`, user `admin`) |
+| Kafka from Mac | `127.0.0.1:9092` |
+| Postgres from Mac | `localhost:5432` |
 
 ---
 
-## Lessons already paid for
+## 4. Environment variables
 
-- YAML: keys under `producer:` / `consumer:` must be indented (otherwise duplicate `build`).
-- `build: .` needs a real `Dockerfile` in the repo root.
-- `InferenceResult` is defined in `src/models/event.py`; `main.py` must import it.
+`.env` and `.env.test` are **git-ignored**: they are not versioned and are the same on every branch.
+This table is the record of what they must contain.
+
+| Variable | `.env` | `.env.test` | Used by |
+|---|---|---|---|
+| `KAFKA_BOOTSTRAP_SERVERS` | `127.0.0.1:9092` | same | all clients (Compose overrides to `kafka:9093`) |
+| `KAFKA_TOPIC` | `user-events` | `test-user-events` | producers, consumer |
+| `KAFKA_GROUP_ID` | `user-events-consumer` | `test-events-consumer` | consumer |
+| `POSTGRES_HOST` / `PORT` / `USER` / `DB` | `localhost` / `5432` / `admin` / `testdb` | same | models |
+| `PERSIST_PRODUCER_REPLICAS` | `2` | – | Compose |
+| `INFERENCE_PRODUCER_REPLICAS` | `1` | – | Compose |
+| `CONSUMER_REPLICAS` | `3` | – | Compose |
+| `PRODUCER_INTERVAL` | `2.0` | – | producers |
+| `PRODUCER_INTERVAL_VARIATION` | `0.5` | – | persist producer (see §9) |
+| *planned* `POISON_PRODUCER_INTERVAL` | `5` | – | poison producer |
+| *planned* `POISON_PRODUCER_REPLICAS` | `1` | – | Compose |
+| *planned* `KAFKA_DLQ_TOPIC` | `user-events-dlq` | `test-user-events-dlq` | router |
+| *planned* `RETRY_DELAY_SECONDS` | `2` | – | router |
+| *planned* `EVENT_RETRIES` | `5` | – | producers, router |
+
+---
+
+## 5. Kafka concepts in this project
+
+| Concept | What it is | Here |
+|---|---|---|
+| Broker | A Kafka server: stores and serves messages | container `kafka`, node 1 |
+| Controller (KRaft) | Keeps cluster metadata; no ZooKeeper | same process (`broker,controller`) |
+| Cluster | Brokers working together | 1 broker, replication factor 1 (no redundancy) |
+| Listener | Network entry point | `HOST` 9092 (Mac), `INTERNAL` 9093 (containers), `CONTROLLER` 9094 |
+| Topic | Named stream of messages | `user-events`, `test-user-events`, planned `user-events-dlq` |
+| Partition | Ordered append-only log; unit of parallelism | 3 per topic (tests create 1) |
+| Offset | Position of a message in one partition | 0, 1, 2… never changes; reading does not delete |
+| Key | Decides the partition: `hash(key) % partitions` | `event-N`, `infer-N`, planned `poison-N` |
+| Value | Message body (bytes) | JSON with `type`, `produced_at` |
+| Consumer group | Consumers sharing `group.id`; partitions are split among them | `user-events-consumer` |
+| Rebalance | Reassigning partitions when members join/leave | on scale, restart, crash |
+| Committed offset | "Group finished everything before here" | stored in `__consumer_offsets` |
+| Lag | log-end offset − committed offset | `kafka-consumer-groups.sh --describe` |
+| Retention | When old messages are deleted | default 7 days, not on read |
+| DLQ | Just another topic for events we cannot process | planned `user-events-dlq` |
+
+Key facts:
+
+- Ordering is guaranteed **only within a partition**. Same key → same partition → ordered.
+- Kafka does **not** deduplicate. Replays and retries are absorbed by `on_conflict_do_nothing`.
+- `auto.offset.reset=earliest` only applies when the group has **no** committed offset.
+- Auto-commit: the offset is marked when `poll()` returns the message and committed every ~5 s.
+  If the handler crashes after that, the message can be **lost**. Re-publishing before moving on gives **at-least-once**.
+
+```mermaid
+flowchart LR
+  subgraph T[user-events]
+    P0[p0]
+    P1[p1]
+    P2[p2]
+  end
+  subgraph G[group user-events-consumer]
+    C1[consumer-1]
+    C2[consumer-2]
+    C3[consumer-3]
+  end
+  P0 --> C1
+  P1 --> C2
+  P2 --> C3
+```
+
+Inspection commands (`kt() { docker exec -it kafka /opt/kafka/bin/"$@"; }`):
+
+```bash
+kt kafka-topics.sh --bootstrap-server kafka:9093 --list
+kt kafka-topics.sh --bootstrap-server kafka:9093 --describe --topic user-events
+kt kafka-consumer-groups.sh --bootstrap-server kafka:9093 --describe --group user-events-consumer
+kt kafka-console-consumer.sh --bootstrap-server kafka:9093 --topic user-events --from-beginning \
+  --max-messages 20 --property print.key=true --property print.partition=true --property print.offset=true
+```
+
+---
+
+## 6. Events and clocks
+
+```json
+{"type": "persist", "produced_at": "2026-10-01T12:00:00+00:00",
+ "vehicle-id": "vehicle-4", "driver-id": "driver-4", "user-id": "user-4",
+ "duration": "12 minutes", "distance": "8.3 km", "amount": "$20.75"}
+```
+
+```json
+{"type": "inference", "produced_at": "2026-10-01T12:00:00+00:00",
+ "user-id": "user-1", "duration": "12 minutes", "distance": "8.3 km"}
+```
+
+- `produced_at`: event time, written by the producer, copied to Postgres. Survives a DB rebuild.
+- `created_at`: Postgres insert time (`now()`). Resets on `down -v`.
+- Old messages without `produced_at` fall back to the Kafka message timestamp (`event_time`).
+- Postgres runs in UTC; Metabase in UTC+10 can make times look like "yesterday".
+
+---
+
+## 7. Tests
+
+- `tests/conftest.py` loads `.env`, then `.env.test` (topic `test-user-events`, group `test-events-consumer`).
+- Fixture `topic`: deletes and recreates the test topic (1 partition) around each test.
+- Fixture `db`: `create_tables()`.
+- Real Kafka + Postgres: start **only infra**, keep app containers down (they would consume test data).
+- File names must be unique across folders (no two `test_persist.py`).
+
+```bash
+docker compose -f docker-compose.infra.yml up -d
+uv run pytest -v
+```
+
+| File | Covers |
+|---|---|
+| `tests/components/test_event_producer.py` | publish → consume round trip |
+| `tests/components/test_event_consumer.py` | consume a message; stop on timeout |
+| `tests/producers/test_trip_producer.py` | persist event shape |
+| `tests/producers/test_inference.py` | inference event shape |
+| `tests/consumers/test_trip_consumer.py` | `persist_event` writes / skips bad JSON |
+| `tests/consumers/test_infer.py` | `handle_event` → `inference_results` |
+
+---
+
+## 8. Robustness week: DLQ and retries (branch `feature/robustness-dlq-retries`)
+
+Concepts:
+
+- **Robust**: survives bad data and contract changes without stopping.
+- **Poison event**: can never be processed (unknown format/type). Do not retry → DLQ.
+- **DLQ**: topic that stores failed events for later analysis.
+- **Retry policy**: re-process events that failed for temporary reasons (network blip, DB down).
+- **Self-recovery**: the system returns to normal on its own (`restart: unless-stopped` + retries).
+
+| Failure | Example | Retry? | Destination |
+|---|---|---|---|
+| Contract change | `type: "refund"` | no | DLQ |
+| Corrupt data | invalid JSON | no | DLQ |
+| Temporary outage | Postgres down → `sqlalchemy.exc.OperationalError` | yes | same topic, then DLQ when `retry` hits 0 |
+
+```mermaid
+flowchart LR
+  T[(user-events)] --> R{router}
+  R -- known type --> H[persist / infer] --> PG[(Postgres)]
+  R -- unknown / bad JSON --> DLQ[(user-events-dlq)]
+  H -. OperationalError .-> Q{retry > 0?}
+  Q -- yes: retry-1, sleep --> T
+  Q -- no --> DLQ
+```
+
+Design decisions:
+
+- The **consumer** decides what goes to the DLQ (only it knows what it cannot process).
+- `EventProducer(topic=None)` gets an optional topic so the router can write to the DLQ and re-queue.
+- DLQ message: `{"reason", "failed_at", "original"}`, same key as the original.
+- Retry re-publishes with the **same key** → same partition, but behind newer messages (order changes).
+- `sleep(RETRY_DELAY_SECONDS)` before re-publishing, otherwise a hot loop while Postgres is down.
+- `retry` lives in the JSON payload; missing field → default `EVENT_RETRIES`.
+
+Status:
+
+- [ ] Hito 1 – poison producer (`type: refund`, every 5 s, `python main.py -p --poison`, service `poison-producer`)
+- [ ] Hito 2 – DLQ topic `user-events-dlq`; router sends unknown type / bad JSON there
+- [ ] Hito 3 – stop Postgres, identify `OperationalError`, re-queue forever, start Postgres, verify rows
+- [ ] Hito 4 – `retry` field, decrement on each retry, DLQ when exhausted
+
+Verification:
+
+```bash
+docker compose stop postgres     # watch "⟳ Retry" in consumer logs
+docker compose start postgres    # watch "✓ Persisted"
+docker compose exec postgres psql -U admin -d testdb -c \
+  "select id, produced_at, created_at from events order by created_at desc limit 10;"
+kt kafka-console-consumer.sh --bootstrap-server kafka:9093 --topic user-events-dlq \
+  --from-beginning --property print.key=true
+```
+
+---
+
+## 9. Known quirks and lessons
+
+- `PRODUCER_INTERVAL_VARIATION` (0.5) is used both as ± seconds of jitter **and** as the replay probability in the persist producer → ~50 % replays.
+- The inference producer uses `time.sleep(interval)`, no jitter.
 - `create_all` does not `ALTER` existing tables; new columns need `down -v` or SQL.
-- Persist producer volume can hide inference in Kafka UI; filter keys `infer-`.
-- Postgres in Docker is UTC; Metabase in UTC+10 can make `created_at` look like “yesterday”.
+- `create_tables()` runs at consumer start: if Postgres is down at boot, the consumer crash-loops until Postgres is back.
+- Changing `.env` needs `docker compose up -d` (recreate), not `restart`.
+- Do not run host `python main.py -p ...` while producer containers are up (double produce).
+- Persist events can hide inference events in Kafka UI; filter by key `infer-`.
+- YAML: keys under a service must be indented; `build: .` needs a root `Dockerfile`.
 
 ---
 
-## Suggested next steps
+## 10. Hito history
 
-1. Split `main.py` into producers / handlers as in the table above.
-2. Split Compose into infra + app files.
-3. Hito 6: pytest on `persist_event` and `infer_event`.
-4. Kubernetes only if required: same replica idea as `--scale`.
+| Hito | Status |
+|---|---|
+| Dockerization (one image, separate services, no `container_name`, 3 partitions) | done |
+| Inference + commands (`type`, `produced_at`, fork, Metabase chart) | done |
+| Split `main.py` into producers / consumers | done |
+| Split Compose into infra + app | done |
+| Testing with pytest | done |
+| Robustness: DLQ + retries | in progress (§8) |
+| Kubernetes (branch `k8s-exploration`) | not started |
