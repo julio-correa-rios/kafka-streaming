@@ -11,13 +11,13 @@ Source of truth is the code; update this file when the code changes.
 flowchart LR
   PP[producer<br/>persist] --> EP[EventProducer]
   PI[inference-producer] --> EP
-  PZ[poison-producer<br/>planned] -.-> EP
+  PZ[poison-producer] --> EP
   EP --> T[(user-events<br/>3 partitions)]
   T --> EC[EventConsumer<br/>group user-events-consumer]
   EC --> R{router.handle_event}
   R -- type=persist --> P[persist_event] --> E[(events)]
   R -- type=inference --> I[infer_event] --> IR[(inference_results)]
-  R -. unknown type / bad JSON<br/>planned .-> DLQ[(user-events-dlq)]
+  R -- unknown type / bad JSON --> DLQ[(user-events-dlq)]
   E --> MB[Metabase]
   IR --> MB
 ```
@@ -32,12 +32,13 @@ flowchart LR
 
 | Path | Role |
 |---|---|
-| `main.py` | CLI only: `-p -r` (persist), `-p --inference`, `-c` (consume) |
+| `main.py` | CLI only: `-p -r` (persist), `-p --inference`, `-p --poison`, `-c` (consume) |
 | `src/event_producer.py` | `EventProducer.publish(key, value)` – shared Kafka producer |
 | `src/event_consumer.py` | `EventConsumer.consume(handler, limit)` – shared Kafka consumer |
 | `src/clock.py` | `utc_now`, `event_time`, `sleep_with_variation` |
 | `src/producers/persist.py` | Trip events, `type: persist`, keys `event-N`, sometimes replays a key |
 | `src/producers/inference.py` | Quote requests, `type: inference`, keys `infer-N` |
+| `src/producers/poison.py` | Poison events, `type: refund` (unknown), keys `poison-N`, every 5 s |
 | `src/consumers/router.py` | `handle_event` (fork), `consume_events` (loop) |
 | `src/consumers/persist.py` | `persist_event` → table `events` |
 | `src/consumers/infer.py` | `infer_event` → table `inference_results` |
@@ -54,7 +55,7 @@ flowchart LR
 | File | Services |
 |---|---|
 | `docker-compose.infra.yml` | `kafka`, `kafka-ui`, `postgres`, `metabase`, `dev` |
-| `docker-compose.app.yml` | `producer`, `inference-producer`, `consumer` (planned: `poison-producer`) |
+| `docker-compose.app.yml` | `producer`, `inference-producer`, `poison-producer`, `consumer` |
 
 Rules:
 
@@ -98,11 +99,11 @@ This table is the record of what they must contain.
 | `CONSUMER_REPLICAS` | `3` | – | Compose |
 | `PRODUCER_INTERVAL` | `2.0` | – | producers |
 | `PRODUCER_INTERVAL_VARIATION` | `0.5` | – | persist producer (see §9) |
-| *planned* `POISON_PRODUCER_INTERVAL` | `5` | – | poison producer |
-| *planned* `POISON_PRODUCER_REPLICAS` | `1` | – | Compose |
-| *planned* `KAFKA_DLQ_TOPIC` | `user-events-dlq` | `test-user-events-dlq` | router |
-| *planned* `RETRY_DELAY_SECONDS` | `2` | – | router |
-| *planned* `EVENT_RETRIES` | `5` | – | producers, router |
+| `POISON_PRODUCER_INTERVAL` | `5` | – | poison producer |
+| `POISON_PRODUCER_REPLICAS` | `1` | – | Compose |
+| `KAFKA_DLQ_TOPIC` | `user-events-dlq` | `test-user-events-dlq` | router |
+| `RETRY_DELAY_SECONDS` | `2` | – | router |
+| `EVENT_RETRIES` | `5` | – | producers, router |
 
 ---
 
@@ -114,17 +115,17 @@ This table is the record of what they must contain.
 | Controller (KRaft) | Keeps cluster metadata; no ZooKeeper | same process (`broker,controller`) |
 | Cluster | Brokers working together | 1 broker, replication factor 1 (no redundancy) |
 | Listener | Network entry point | `HOST` 9092 (Mac), `INTERNAL` 9093 (containers), `CONTROLLER` 9094 |
-| Topic | Named stream of messages | `user-events`, `test-user-events`, planned `user-events-dlq` |
+| Topic | Named stream of messages | `user-events`, `test-user-events`, `user-events-dlq` |
 | Partition | Ordered append-only log; unit of parallelism | 3 per topic (tests create 1) |
 | Offset | Position of a message in one partition | 0, 1, 2… never changes; reading does not delete |
-| Key | Decides the partition: `hash(key) % partitions` | `event-N`, `infer-N`, planned `poison-N` |
+| Key | Decides the partition: `hash(key) % partitions` | `event-N`, `infer-N`, `poison-N` |
 | Value | Message body (bytes) | JSON with `type`, `produced_at` |
 | Consumer group | Consumers sharing `group.id`; partitions are split among them | `user-events-consumer` |
 | Rebalance | Reassigning partitions when members join/leave | on scale, restart, crash |
 | Committed offset | "Group finished everything before here" | stored in `__consumer_offsets` |
 | Lag | log-end offset − committed offset | `kafka-consumer-groups.sh --describe` |
 | Retention | When old messages are deleted | default 7 days, not on read |
-| DLQ | Just another topic for events we cannot process | planned `user-events-dlq` |
+| DLQ | Just another topic for events we cannot process | `user-events-dlq` |
 
 Key facts:
 
@@ -204,6 +205,7 @@ uv run pytest -v
 | `tests/producers/test_inference.py` | inference event shape |
 | `tests/consumers/test_trip_consumer.py` | `persist_event` writes / skips bad JSON |
 | `tests/consumers/test_infer.py` | `handle_event` → `inference_results` |
+| `tests/consumers/test_dlq_router.py` | unknown type / bad JSON → DLQ; DB error re-queues with `retry - 1`; `retry: 0` → DLQ |
 
 ---
 
@@ -244,10 +246,10 @@ Design decisions:
 
 Status:
 
-- [ ] Hito 1 – poison producer (`type: refund`, every 5 s, `python main.py -p --poison`, service `poison-producer`)
-- [ ] Hito 2 – DLQ topic `user-events-dlq`; router sends unknown type / bad JSON there
-- [ ] Hito 3 – stop Postgres, identify `OperationalError`, re-queue forever, start Postgres, verify rows
-- [ ] Hito 4 – `retry` field, decrement on each retry, DLQ when exhausted
+- [x] Hito 1 – poison producer (`type: refund`, every 5 s, `python main.py -p --poison`, service `poison-producer`)
+- [x] Hito 2 – DLQ topic `user-events-dlq`; router sends unknown type / bad JSON there
+- [x] Hito 3 – stop Postgres, identify `OperationalError`, re-queue forever, start Postgres, verify rows
+- [x] Hito 4 – `retry` field, decrement on each retry, DLQ when exhausted
 
 Verification:
 
@@ -272,6 +274,12 @@ kt kafka-console-consumer.sh --bootstrap-server kafka:9093 --topic user-events-d
 - Do not run host `python main.py -p ...` while producer containers are up (double produce).
 - Persist events can hide inference events in Kafka UI; filter by key `infer-`.
 - YAML: keys under a service must be indented; `build: .` needs a root `Dockerfile`.
+- Each failed DB attempt costs ~10 s (≈8 s DNS timeout for `postgres` + `RETRY_DELAY_SECONDS`). During a long outage
+  new events arrive faster than retries cycle, so re-queued copies sit at the end of the partition; exhausting
+  `EVENT_RETRIES=5` live can take many minutes. To see the DLQ path, stop the producers and publish one event with `"retry": 1`.
+- Producers restart numbering on every container start (`event-4`, `infer-1`…), so keys collide with rows from earlier
+  runs and `on_conflict_do_nothing` silently skips them. Use `created_at - produced_at` only on fresh data.
+- `ENV PYTHONUNBUFFERED=1` in the `Dockerfile`: without it `print` output reaches `docker compose logs` in late batches.
 - Docker installs from `requirements.txt`, not `uv.lock`: keep versions pinned. SQLAlchemy 2.1 changed the default
   `postgresql://` driver to psycopg 3, so the URL names the driver explicitly: `postgresql+psycopg2://`.
 
@@ -286,5 +294,5 @@ kt kafka-console-consumer.sh --bootstrap-server kafka:9093 --topic user-events-d
 | Split `main.py` into producers / consumers | done |
 | Split Compose into infra + app | done |
 | Testing with pytest | done |
-| Robustness: DLQ + retries | in progress (§8) |
+| Robustness: DLQ + retries | done (§8) |
 | Kubernetes (branch `k8s-exploration`) | not started |
