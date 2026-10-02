@@ -26,6 +26,7 @@ def random_event(event_id: str) -> dict:
         "duration": f"{duration} minutes",
         "distance": f"{distance} km",
         "amount": f"${amount:.2f}",
+        "retry": int(os.getenv("EVENT_RETRIES", "3")),
     }
 
 def publish_random_events() -> None:

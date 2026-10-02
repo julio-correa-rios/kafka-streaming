@@ -60,9 +60,14 @@ def handle_event(message: Message) -> None:
         else:
             send_to_dlq(message, f"unknown type: {event_type}")
     except OperationalError as error:
-        print(f"⟳ Postgres down, re-queue: {event_id} ({error.orig})")
-        time.sleep(float(os.getenv("RETRY_DELAY_SECONDS", "1")))
-        publish_to(os.getenv("KAFKA_TOPIC"), event_id, raw)
+        retries_left = int(payload.get("retry", os.getenv("EVENT_RETRIES", "3")))
+        if retries_left > 0:
+            payload["retry"] = retries_left - 1
+            print(f"⟳ Retry {event_id}: {payload['retry']} left ({error.orig})")
+            time.sleep(float(os.getenv("RETRY_DELAY_SECONDS", "1")))
+            publish_to(os.getenv("KAFKA_TOPIC"), event_id, json.dumps(payload))
+        else:
+            send_to_dlq(message, f"retries exhausted: {error.orig}")
 
 
 def consume_events(limit: Optional[int] = None) -> None:

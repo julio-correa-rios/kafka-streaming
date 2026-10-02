@@ -16,6 +16,7 @@ def random_inference(event_id: str) -> dict:
         "user-id": f"user-{n}",
         "duration": f"{duration} minutes",
         "distance": f"{distance} km",
+        "retry": int(os.getenv("EVENT_RETRIES", "3")),
     }
 
 
