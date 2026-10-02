@@ -45,6 +45,12 @@ def main() -> None:
             print("\n✓ Stopped producing inference events")
         return
 
+    if args.poison:
+        try:
+            publish_poison_events()
+        except KeyboardInterrupt:
+            print("\n✓ Stopped producing poison events")
+        return
 
     if args.random or args.publish:
         try:
@@ -53,7 +59,6 @@ def main() -> None:
             print("\n✓ Stopped producing")
         return
     
-
 
     if args.consume:
         consume_events()
