@@ -23,6 +23,19 @@ services:
       - kafka
     restart: unless-stopped
 
+
+  poison-producer:
+    deploy:
+      replicas: ${POISON_PRODUCER_REPLICAS:-1}
+    build: .
+    command: python main.py -p --poison
+    env_file: .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+    depends_on:
+      - kafka
+    restart: unless-stopped
+
   consumer:
     deploy:
       replicas: ${CONSUMER_REPLICAS:-1}
