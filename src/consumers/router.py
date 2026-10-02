@@ -1,8 +1,10 @@
 import json
 import os
+import time
 from typing import Optional
 
 from confluent_kafka import Message
+from sqlalchemy.exc import OperationalError
 
 from src.clock import utc_now
 from src.consumers.infer import infer_event
@@ -50,12 +52,17 @@ def handle_event(message: Message) -> None:
         return
 
     event_type = payload.get("type", "persist")
-    if event_type == "persist":
-        persist_event(message)
-    elif event_type == "inference":
-        infer_event(message, payload)
-    else:
-        send_to_dlq(message, f"unknown type: {event_type}")
+    try:
+        if event_type == "persist":
+            persist_event(message)
+        elif event_type == "inference":
+            infer_event(message, payload)
+        else:
+            send_to_dlq(message, f"unknown type: {event_type}")
+    except OperationalError as error:
+        print(f"⟳ Postgres down, re-queue: {event_id} ({error.orig})")
+        time.sleep(float(os.getenv("RETRY_DELAY_SECONDS", "1")))
+        publish_to(os.getenv("KAFKA_TOPIC"), event_id, raw)
 
 
 def consume_events(limit: Optional[int] = None) -> None:
