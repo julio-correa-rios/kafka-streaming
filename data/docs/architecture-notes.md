@@ -272,6 +272,8 @@ kt kafka-console-consumer.sh --bootstrap-server kafka:9093 --topic user-events-d
 - Do not run host `python main.py -p ...` while producer containers are up (double produce).
 - Persist events can hide inference events in Kafka UI; filter by key `infer-`.
 - YAML: keys under a service must be indented; `build: .` needs a root `Dockerfile`.
+- Docker installs from `requirements.txt`, not `uv.lock`: keep versions pinned. SQLAlchemy 2.1 changed the default
+  `postgresql://` driver to psycopg 3, so the URL names the driver explicitly: `postgresql+psycopg2://`.
 
 ---
 

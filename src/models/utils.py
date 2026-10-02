@@ -13,7 +13,7 @@ def get_engine():
     port = os.getenv("POSTGRES_PORT")
     db = os.getenv("POSTGRES_DB")
 
-    connection_string = f"postgresql://{user}:{password}@{host}:{port}/{db}"
+    connection_string = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}"
     return create_engine(connection_string)
 
 
