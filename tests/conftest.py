@@ -40,3 +40,20 @@ def topic() -> str:
 def db():
     create_tables()
     yield
+
+
+
+@pytest.fixture
+def dlq_topic() -> str:
+    admin = AdminClient(
+        {"bootstrap.servers": os.getenv("KAFKA_BOOTSTRAP_SERVERS")}
+    )
+    name = os.getenv("KAFKA_DLQ_TOPIC")
+
+    delete_topic(admin, name)
+    for future in admin.create_topics([NewTopic(name, 1, 1)]).values():
+        future.result()
+
+    yield name
+
+    delete_topic(admin, name)

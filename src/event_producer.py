@@ -8,9 +8,11 @@ class EventProducer:
     _topic: str = None
     _producer: Producer = None
 
-    def __init__(self) -> None:
+    def __init__(self, topic: str | None = None) -> None:
         load_dotenv()
-        self._topic = os.getenv("KAFKA_TOPIC")
+        self._topic = topic or os.getenv("KAFKA_TOPIC")
+        if not self._topic:
+            raise ValueError("KAFKA_TOPIC is not set")
         self._producer = Producer(
             {"bootstrap.servers": os.getenv("KAFKA_BOOTSTRAP_SERVERS")}
         )

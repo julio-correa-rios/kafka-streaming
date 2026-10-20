@@ -4,7 +4,7 @@ import argparse
 from src.consumers.router import consume_events
 from src.producers.inference import publish_inference_events
 from src.producers.persist import publish_random_events
-
+from src.producers.poison import publish_poison_events
 
 load_dotenv()
 
@@ -26,6 +26,11 @@ def main() -> None:
     action="store_true",
     help="Publish inference (quote) requests in a loop",
     )
+    parser.add_argument(
+    "--poison",
+    action="store_true",
+    help="Publish poison events in a loop (sometimes repeats ids to try idempotency and some unknown types)",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("-p", "--publish", action="store_true",
                       help="Only publish events")
@@ -40,6 +45,12 @@ def main() -> None:
             print("\n✓ Stopped producing inference events")
         return
 
+    if args.poison:
+        try:
+            publish_poison_events()
+        except KeyboardInterrupt:
+            print("\n✓ Stopped producing poison events")
+        return
 
     if args.random or args.publish:
         try:
@@ -48,6 +59,7 @@ def main() -> None:
             print("\n✓ Stopped producing")
         return
     
+
     if args.consume:
         consume_events()
         return
