@@ -11,6 +11,26 @@ dotenv.load_dotenv()
 INTERVAL = float(os.getenv("PRODUCER_INTERVAL"))
 VARIATION = float(os.getenv("PRODUCER_INTERVAL_VARIATION"))
 
+CITY_WEIGHTS = {
+    "Madrid": 33,
+    "Barcelona": 16,
+    "Valencia": 8,
+    "Sevilla": 7,
+    "Zaragoza": 7,
+    "Malaga": 6,
+    "Murcia": 5,
+    "Bilbao": 3,
+}
+
+
+def random_city() -> str:
+    return random.choices(
+        list(CITY_WEIGHTS),
+        weights=list(CITY_WEIGHTS.values()),
+        k=1,
+    )[0]
+
+
 ## Random events generator
 def random_event(event_id: str) -> dict:
     duration = random.randint(5, 30)
@@ -23,6 +43,7 @@ def random_event(event_id: str) -> dict:
         "vehicle-id": f"vehicle-{n}",
         "driver-id": f"driver-{n}",
         "user-id": f"user-{n}",
+        "city": random_city(),
         "duration": f"{duration} minutes",
         "distance": f"{distance} km",
         "amount": f"${amount:.2f}",
